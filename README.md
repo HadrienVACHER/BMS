@@ -2,7 +2,7 @@
 
 <br>
 
-
+H
 
 **Adjoint-based diffusion samplers** is a new class of diffusion models for energy-based Boltzmann distributions that is highly scalable, extremely data-efficient, and achieves strong performance. This repository contains the implementation of adjoint-based diffusion samplers for **synthetic energies**, _e.g._, **Double Well** and **Lennard Jones** potentials. Currently, the repository contains the following adjoint-based diffusion samplers:
 
