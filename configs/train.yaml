@@ -3,7 +3,7 @@ defaults:
   - experiment: demo_asbs
   - lancher: demo_slurm
 
-project: adjoint_sampler
+project: BMS
 train_itr_per_epoch: 100
 init_stage: adjoint
 
