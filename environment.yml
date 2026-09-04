@@ -1,15 +1,16 @@
-name: adjoint_samplers
+name: BMS
 channels:
   - pytorch
-  - conda-forge
   - nvidia
+  - conda-forge
 dependencies:
   - python=3.11
+  - cuda-version=12.1
   - pytorch
   - torchvision
   - torchaudio
-  - pytorch-cuda
-  - matplotlib=3.8 # ghliu: FAIR Chem plotting
+  - pytorch-cuda=12.1
+  - matplotlib=3.8
   - jupyter
   - numpy
   - rdkit
@@ -37,4 +38,3 @@ dependencies:
     - mdtraj
     - ipdb
     - termcolor
-    - ipykernel # notebook@vscode
