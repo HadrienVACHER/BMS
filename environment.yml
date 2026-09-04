@@ -16,6 +16,8 @@ dependencies:
   - rdkit
   - openmm
   - openmmtools
+  - jax=0.4.20
+  - jaxlib=0.4.20=cpu*
   - pip
   - pip:
     - submitit
