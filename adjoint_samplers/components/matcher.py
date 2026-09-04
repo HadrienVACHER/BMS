@@ -279,3 +279,40 @@ class CorrectorMatcher(Matcher):
 
         self._check_target_shape(t1, x1, score)
         return (t1, x1,), score
+
+class BMSMatcher(Matcher):
+    """ Bridge Matching Sampler (Blessing et al.), couplage indépendant P0 ⊗ P^u_T,
+        c(t) = γ(t). La cible est σ(t)^{-1} ξ(X, t) (paramétrisation drift = σ² u).
+    """
+    def __init__(self, source=None, grad_term_cost=None, t_min: float = 1e-3, **kwargs):
+        super().__init__(**kwargs)
+        assert not self.sde.ref_sde.has_drift  # référence = mouvement brownien
+        self.source = source
+        self.grad_term_cost = grad_term_cost
+        self.t_min = t_min
+
+    def populate_buffer(self, x0, timesteps, is_asbs_init_stage):
+        # Simulation avec u_i (sdeint est @no_grad => "detached")
+        (_, x1) = sdeint(self.sde, x0, timesteps, only_boundary=True)
+        # ∇E évalué une seule fois par échantillon
+        grad_E1 = self.grad_term_cost.grad_E(x1)
+        self.buffer.add({
+            "x1": x1.to("cpu"),
+            "grad_E1": grad_E1.to("cpu"),
+        })
+
+    def prepare_target(self, data, device):
+        x1 = data["x1"].to(device)
+        grad_E1 = data["grad_E1"].to(device)
+        B = x1.shape[0]
+
+        # Couplage indépendant : X0 retiré du prior, indépendamment de X_T
+        x0 = self.source.sample([B,]).to(device)
+
+        t = self.t_min + (1 - self.t_min) * torch.rand(B, 1, device=device)
+        xt = self.sde.ref_sde.sample_posterior(t, x0, x1)          # X_t ~ P_{t|0,T}
+
+        score_prior = self.source.score(x0)                          # ∇ log p_prior(X0)
+        score_t0 = self.sde.ref_sde.cond_score(x0, t, xt)            # ∇_{Xt} log P_{t|0}
+        target = score_prior - grad_E1 - score_t0                    # σ^{-1} ξ
+        return (t, xt), target

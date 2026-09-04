@@ -112,3 +112,16 @@ class GraphScoreGradTermCost(ScoreGradTermCost):
 
         grad_E = graph_utils.remove_mean(grad_E, N, D)
         return grad_E
+
+class GraphGradEnergy(GradEnergy):
+    """ ∇E(X_T) clippé par particule et projeté sur le sous-espace zero-COM """
+    def __init__(self, energy, **kwargs):
+        super().__init__(energy, **kwargs)
+        self.n_particles = energy.n_particles
+        self.n_spatial_dim = energy.n_spatial_dim
+
+    def grad_E(self, x1):
+        N, D = self.n_particles, self.n_spatial_dim
+        grad_E = self.energy(x1)["forces"]
+        grad_E = self.clip(grad_E.view(-1, N, D)).view(-1, N * D)
+        return graph_utils.remove_mean(grad_E, N, D)

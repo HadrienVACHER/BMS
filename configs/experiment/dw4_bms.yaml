@@ -1,0 +1,37 @@
+# @package _global_
+defaults:
+  - /problem: dw4
+  - /source: meanfree
+  - /sde@ref_sde: graph_ve
+  - /model@controller: egnn
+  - /state_cost: zero
+  - /term_cost: graph_energy_term_cost
+  - /matcher@adjoint_matcher: bms
+
+exp_name: dw4_bms
+scale: 2            # sigma_init
+nfe: 200
+sigma_max: 1.5
+sigma_min: 0.001
+rescale_t: null
+damping: 0.0        # eta ; > 0 pour la variante amortie
+num_epochs: 5000
+max_grad_E_norm: 100
+
+adjoint_matcher:
+  buffer_size: 10000
+  duplicates: 10
+  resample_size: 1000
+  num_epochs_per_stage: ${num_epochs}
+  optim:
+    lr: 1e-4
+    weight_decay: 0
+
+use_wandb: true
+eval_freq: 200
+
+timesteps:
+  t0: 1e-3
+  t1: 1.0
+  steps: ${nfe}
+  rescale_t: ${rescale_t}

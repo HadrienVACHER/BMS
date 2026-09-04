@@ -14,7 +14,7 @@ checkpoint: null
 save_freq: 100
 
 timesteps:
-  t0: 0.0
+  t0: 0
   t1: 1.0
   steps: ${nfe}
   rescale_t: ${rescale_t}

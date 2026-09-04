@@ -35,7 +35,10 @@ def main(cfg):
         train_utils.setup(cfg)
         print(str(cfg))
 
-        device = "cuda"
+        if torch.cuda.is_available():
+            device = "cuda"
+        else:
+            device = "cpu"
 
         # fix the seed for reproducibility
         seed = cfg.seed + distributed_mode.get_rank()
@@ -79,6 +82,7 @@ def main(cfg):
             cfg.adjoint_matcher,
             grad_term_cost=grad_term_cost,
             sde=sde,
+            source=source,
         )
 
 

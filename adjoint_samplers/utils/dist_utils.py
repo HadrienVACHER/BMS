@@ -65,6 +65,9 @@ class Gauss(distributions.Distribution):
         z = torch.randn(*shape, self.dim, device=self.loc.device)
         return z * self.scale + self.loc
 
+    def score(self, x):
+        return -(x - self.loc) / self.scale**2
+
 
 class Delta(distributions.Distribution):
     def __init__(self, dim, loc: float = 0.0, device="cpu") -> None:
@@ -106,6 +109,10 @@ class CenteredParticlesGauss(distributions.Distribution):
         samples = samples.reshape(-1, self.n_particles, self.spatial_dim)
         samples = samples - samples.mean(-2, keepdims=True)
         return samples.reshape(*shape, self.n_particles * self.spatial_dim)
+
+    def score(self, x):
+        # x est déjà à centre de masse nul, donc le score reste dans le sous-espace
+        return -x / self.scale**2
 
 
 class CenteredParticlesHarmonic(distributions.Distribution):

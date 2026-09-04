@@ -10,6 +10,7 @@ from torchmetrics.aggregation import MeanMetric
 import adjoint_samplers.utils.train_utils as train_utils
 from adjoint_samplers.components.matcher import Matcher
 
+import copy
 
 def cycle(iterable):
     while True:
@@ -44,6 +45,14 @@ def train_one_epoch(
 
     loader = iter(cycle(dataloader))
 
+    eta = cfg.get("damping", 0.0)
+    prev_model = None
+    if eta > 0:
+        base = model.module if hasattr(model, "module") else model   # DDP
+        prev_model = copy.deepcopy(base).eval()
+        for p in prev_model.parameters():
+            p.requires_grad_(False)
+
     model.train(True)
     for _ in range(cfg.train_itr_per_epoch):
         optimizer.zero_grad()
@@ -53,7 +62,12 @@ def train_one_epoch(
         input, target = matcher.prepare_target(data, device)
         output = model(*input)
 
-        loss = loss_scale * ((output - target)**2).mean()
+        loss = ((output - target)**2).mean()
+        if prev_model is not None:
+            with torch.no_grad():
+                prev_output = prev_model(*input)
+            loss = loss + eta * ((output - prev_output)**2).mean()
+        loss = loss_scale * loss
         loss.backward()
 
         if cfg.clip_grad_norm:
