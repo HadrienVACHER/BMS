@@ -282,20 +282,24 @@ class CorrectorMatcher(Matcher):
 
 class BMSMatcher(Matcher):
     """ Bridge Matching Sampler (Blessing et al.), couplage indépendant P0 ⊗ P^u_T,
-        c(t) = γ(t). La cible est σ(t)^{-1} ξ(X, t) (paramétrisation drift = σ² u).
+        c(t) = γ(t) = κ(t)/κ(1).
+        Cible (Prop. C.3, forme numériquement stable utilisée par le code officiel) :
+            σ^{-1} ξ = γ(t) [∇log p_prior(X0) − ∇E(X1)] − ∇_{X1} log P_{1|0}(X1 | X0)
+        Aucune division par κ(t) => pas de singularité en t=0, pas besoin de t_min.
     """
-    def __init__(self, source=None, grad_term_cost=None, t_min: float = 1e-3, **kwargs):
+    def __init__(self, source=None, grad_term_cost=None, **kwargs):
         super().__init__(**kwargs)
         assert not self.sde.ref_sde.has_drift  # référence = mouvement brownien
         self.source = source
         self.grad_term_cost = grad_term_cost
-        self.t_min = t_min
 
     def populate_buffer(self, x0, timesteps, is_asbs_init_stage):
         # Simulation avec u_i (sdeint est @no_grad => "detached")
         (_, x1) = sdeint(self.sde, x0, timesteps, only_boundary=True)
         # ∇E évalué une seule fois par échantillon
         grad_E1 = self.grad_term_cost.grad_E(x1)
+        mask = torch.isfinite(grad_E1).all(dim=-1) & torch.isfinite(x1).all(dim=-1)
+        x1, grad_E1 = x1[mask], grad_E1[mask]
         self.buffer.add({
             "x1": x1.to("cpu"),
             "grad_E1": grad_E1.to("cpu"),
@@ -309,10 +313,15 @@ class BMSMatcher(Matcher):
         # Couplage indépendant : X0 retiré du prior, indépendamment de X_T
         x0 = self.source.sample([B,]).to(device)
 
-        t = self.t_min + (1 - self.t_min) * torch.rand(B, 1, device=device)
-        xt = self.sde.ref_sde.sample_posterior(t, x0, x1)          # X_t ~ P_{t|0,T}
+        t = torch.rand(B, 1, device=device)                          # U[0,1), sans cutoff
+        xt = self.sde.ref_sde.sample_posterior(t, x0, x1)            # X_t ~ P_{t|0,1}
+
+        ones = torch.ones_like(t)
+        kappa_t = self.sde.ref_sde._diffsquare_integral(t)           # ∫_0^t σ² ds
+        kappa_1 = self.sde.ref_sde._diffsquare_integral(ones)        # ∫_0^1 σ² ds
+        gamma_t = kappa_t / kappa_1                                  # c(t) = γ(t)
 
         score_prior = self.source.score(x0)                          # ∇ log p_prior(X0)
-        score_t0 = self.sde.ref_sde.cond_score(x0, t, xt)            # ∇_{Xt} log P_{t|0}
-        target = score_prior - grad_E1 - score_t0                    # σ^{-1} ξ
+        ref_score_10 = self.sde.ref_sde.cond_score(x0, ones, x1)     # ∇_{X1} log P_{1|0} = (X0−X1)/κ(1)
+        target = gamma_t * (score_prior - grad_E1) - ref_score_10    # σ^{-1} ξ
         return (t, xt), target

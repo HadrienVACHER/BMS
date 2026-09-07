@@ -48,10 +48,13 @@ def train_one_epoch(
     eta = cfg.get("damping", 0.0)
     prev_model = None
     if eta > 0:
-        base = model.module if hasattr(model, "module") else model   # DDP
-        prev_model = copy.deepcopy(base).eval()
-        for p in prev_model.parameters():
-            p.requires_grad_(False)
+        interval = cfg.get("prev_model_interval_epoch", 25)
+        if getattr(matcher, "_prev_model", None) is None or epoch % interval == 0:
+            base = model.module if hasattr(model, "module") else model
+            matcher._prev_model = copy.deepcopy(base).eval()
+            for p in matcher._prev_model.parameters():
+                p.requires_grad_(False)
+        prev_model = matcher._prev_model
 
     model.train(True)
     for _ in range(cfg.train_itr_per_epoch):
