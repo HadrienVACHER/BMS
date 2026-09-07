@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - /problem: dw4
+  - /source: meanfree
+  - /sde@ref_sde: graph_ve
+  - /model@controller: egnn
+  - /state_cost: zero
+  - /term_cost: graph_score_term_cost
+  - /matcher@adjoint_matcher: adjoint_ve
+
+exp_name: dw4_as
+
+# === sde ===
+nfe: 200
+sigma_max: 2
+sigma_min: 0.001 ## Use smaller sigma_max
+rescale_t: null # quad, cosine
+
+
+# === training ===
+num_epochs: 5000
+max_grad_E_norm: 100
+
+adjoint_matcher:
+  buffer_size: 10000
+  duplicates: 10
+  resample_size: 1000
+  num_epochs_per_stage: ${num_epochs}
+  optim:
+    lr: 1e-4
+    weight_decay: 0
+
+
+# === eval & logging ===
+use_wandb: true
+eval_freq: 200
