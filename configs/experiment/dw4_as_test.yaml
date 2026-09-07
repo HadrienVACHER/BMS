@@ -9,7 +9,9 @@ defaults:
   - /term_cost: graph_score_term_cost
   - /matcher@adjoint_matcher: adjoint_ve
 
-exp_name: dw4_as
+exp_name: dw4_as_test
+
+scale: 2
 
 # === sde ===
 nfe: 200
