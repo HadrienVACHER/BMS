@@ -15,7 +15,7 @@ sigma_max: 1.5
 sigma_min: 0.001
 rescale_t: null
 damping: 0.0        # eta ; > 0 pour la variante amortie
-num_epochs: 1000
+num_epochs: 5000
 max_grad_E_norm: 100
 prev_model_interval_epoch: 25
 
@@ -29,10 +29,10 @@ adjoint_matcher:
     weight_decay: 0
 
 use_wandb: true
-eval_freq: 200
+eval_freq: 100
 
 timesteps:
-  t0: 0.0
+  t0: 1e-3
   t1: 1.0
   steps: ${nfe}
   rescale_t: ${rescale_t}

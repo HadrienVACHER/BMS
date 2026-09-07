@@ -1,4 +1,5 @@
 _target_: adjoint_samplers.components.matcher.BMSMatcher
 buffer:
+t_min: 1e-3
   _target_: adjoint_samplers.components.buffer.BatchBuffer
   buffer_size: ${adjoint_matcher.buffer_size}

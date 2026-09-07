@@ -65,7 +65,11 @@ def train_one_epoch(
         input, target = matcher.prepare_target(data, device)
         output = model(*input)
 
-        loss = ((output - target)**2).mean()
+        sq = (output - target)**2
+        if hasattr(matcher, "loss_weight"):
+            sq = matcher.loss_weight(input[0]) * sq      # input[0] = t
+        loss = sq.mean()
+        
         if prev_model is not None:
             with torch.no_grad():
                 prev_output = prev_model(*input)

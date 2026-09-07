@@ -287,11 +287,12 @@ class BMSMatcher(Matcher):
             σ^{-1} ξ = γ(t) [∇log p_prior(X0) − ∇E(X1)] − ∇_{X1} log P_{1|0}(X1 | X0)
         Aucune division par κ(t) => pas de singularité en t=0, pas besoin de t_min.
     """
-    def __init__(self, source=None, grad_term_cost=None, **kwargs):
+    def __init__(self, source=None, grad_term_cost=None, t_min: float = 1e-3, **kwargs):
         super().__init__(**kwargs)
-        assert not self.sde.ref_sde.has_drift  # référence = mouvement brownien
+        assert not self.sde.ref_sde.has_drift
         self.source = source
         self.grad_term_cost = grad_term_cost
+        self.t_min = t_min
 
     def populate_buffer(self, x0, timesteps, is_asbs_init_stage):
         # Simulation avec u_i (sdeint est @no_grad => "detached")
@@ -309,19 +310,14 @@ class BMSMatcher(Matcher):
         x1 = data["x1"].to(device)
         grad_E1 = data["grad_E1"].to(device)
         B = x1.shape[0]
-
-        # Couplage indépendant : X0 retiré du prior, indépendamment de X_T
         x0 = self.source.sample([B,]).to(device)
-
-        t = torch.rand(B, 1, device=device)                          # U[0,1), sans cutoff
-        xt = self.sde.ref_sde.sample_posterior(t, x0, x1)            # X_t ~ P_{t|0,1}
-
-        ones = torch.ones_like(t)
-        kappa_t = self.sde.ref_sde._diffsquare_integral(t)           # ∫_0^t σ² ds
-        kappa_1 = self.sde.ref_sde._diffsquare_integral(ones)        # ∫_0^1 σ² ds
-        gamma_t = kappa_t / kappa_1                                  # c(t) = γ(t)
-
-        score_prior = self.source.score(x0)                          # ∇ log p_prior(X0)
-        ref_score_10 = self.sde.ref_sde.cond_score(x0, ones, x1)     # ∇_{X1} log P_{1|0} = (X0−X1)/κ(1)
-        target = gamma_t * (score_prior - grad_E1) - ref_score_10    # σ^{-1} ξ
+        t = self.t_min + (1 - self.t_min) * torch.rand(B, 1, device=device)   # cutoff 1e-3 (Annexe C.3)
+        xt = self.sde.ref_sde.sample_posterior(t, x0, x1)
+        score_prior = self.source.score(x0)                        # ∇log p_prior(X0)
+        score_t0 = self.sde.ref_sde.cond_score(x0, t, xt)          # ∇_{Xt} log P_{t|0} = (X0−Xt)/κ(t)
+        target = score_prior - grad_E1 - score_t0                  # Prop. 2.10, c = γ
         return (t, xt), target
+
+    def loss_weight(self, t):
+        ref = self.sde.ref_sde
+        return ref._diffsquare_integral(t) / ref._diffsquare_integral(torch.ones_like(t))   # γ(t) ∈ [0,1]
