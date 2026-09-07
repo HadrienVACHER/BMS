@@ -159,8 +159,10 @@ class AdjointVEMatcher(AdjointMatcher):
     """ Efficient computation of AM when the base SDE has no drift (e.g., VE)
         and the SOC problem has no state cost.
     """
-    def __init__(self, **kwargs):
+    def __init__(self, ncv_control=None, center_energy: bool = True, **kwargs):
         super().__init__(**kwargs)
+        self.ncv_control = ncv_control
+        self.center_energy = center_energy
         self._check_soc_problem()
 
     def _check_soc_problem(self):
@@ -186,11 +188,19 @@ class AdjointVEMatcher(AdjointMatcher):
         adjoint1 = self._compute_adjoint1(x1, is_asbs_init_stage).clone()
 
         self._check_buffer_sample_shape(x0, x1, adjoint1)
-        self.buffer.add({
-            "x0": x0.to("cpu"),
-            "x1": x1.to("cpu"),
-            "adjoint1": adjoint1.to("cpu"),
-        })
+        batch = {
+            "x0": x0.detach().to("cpu"),
+            "x1": x1.detach().to("cpu"),
+            "adjoint1": adjoint1.detach().to("cpu"),
+        }
+        # Stein NCV: store physical energy and ∇E as constants (no Stein eval here).
+        if self.ncv_control is not None:
+            with torch.no_grad():
+                energy = self.grad_term_cost.energy.eval(x1).reshape(x1.shape[0])
+                grad_E = self.grad_term_cost.grad_E(x1)
+            batch["E1"] = energy.detach().to("cpu")
+            batch["grad_E"] = grad_E.detach().to("cpu")
+        self.buffer.add(batch)
 
     def sample_t(self, x):
         (B, D) = x.shape
@@ -200,17 +210,67 @@ class AdjointVEMatcher(AdjointMatcher):
         (B, D) = xt.shape
         assert t.shape == (B, 1) and adjoint.shape == (B, D)
 
+    def _stein_control_variate(self, x1, grad_g, energy, grad_E):
+        """ Scalar Stein operator 𝒯h for h = f_φ ψ(E), ψ = softplus.
+
+        𝒯h = ψ(E) ∇·f_φ + ψ'(E) (f_φ · ∇E) − ψ(E) (f_φ · ∇g)
+        Returned as (B, 1) and broadcast onto the d-dimensional AS target.
+        E[𝒯h] = 0 under the measure with score −∇g, so the estimator stays unbiased.
+        """
+        x = x1.detach().requires_grad_(True)
+        grad_g = grad_g.detach()
+        grad_E = grad_E.detach()
+        energy = energy.detach().reshape(x.shape[0])
+        if self.center_energy:
+            energy = energy - energy.min()
+
+        self.ncv_control.train(True)
+        f_val = self.ncv_control(x)
+
+        divergence_f = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+        for i in range(x.shape[1]):
+            grad_f_i = torch.autograd.grad(
+                outputs=f_val[:, i].sum(),
+                inputs=x,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            divergence_f = divergence_f + grad_f_i[:, i]
+
+        psi_E = torch.nn.functional.softplus(energy).unsqueeze(1)
+        psi_prime_E = torch.sigmoid(energy).unsqueeze(1)
+        dot_f_gradE = torch.sum(f_val * grad_E, dim=1, keepdim=True)
+        dot_f_gradg = torch.sum(f_val * grad_g, dim=1, keepdim=True)
+
+        return (
+            psi_E * divergence_f.unsqueeze(1)
+            + psi_prime_E * dot_f_gradE
+            - psi_E * dot_f_gradg
+        )
+
     def prepare_target(self, data, device):
         x0 = data["x0"].to(device)
         x1 = data["x1"].to(device)
         adjoint1 = data["adjoint1"].to(device)
 
         t = self.sample_t(x0).to(device)
-        xt = self.sde.sample_base_posterior(t, x0, x1)
-        adjoint = adjoint1 # const w.r.t. time in this case
+        # Bridge uses detached X1 so the Stein graph on X1 does not leak into Xt.
+        xt = self.sde.sample_base_posterior(t, x0, x1.detach())
+        adjoint = adjoint1  # const w.r.t. time in this case
+        target = -adjoint
+
+        if self.ncv_control is not None:
+            stein_cv = self._stein_control_variate(
+                x1,
+                adjoint1,
+                data["E1"].to(device),
+                data["grad_E"].to(device),
+            )
+            # Repo convention: u matches −∇g. Adding 𝒯h (mean 0) does not bias.
+            target = target + stein_cv
 
         self._check_target_shape(t, xt, adjoint)
-        return (t, xt), - adjoint
+        return (t, xt), target
 
 
 class AdjointVPMatcher(AdjointVEMatcher):

@@ -127,6 +127,7 @@ def save(
     adjoint_matcher: Matcher,
     corrector: torch.nn.Module | None = None,
     corrector_matcher: Matcher | None = None,
+    ncv_control: torch.nn.Module | None = None,
     ckpt_dir: Path = Path("checkpoints"),
 ):
     ckpt_dir.mkdir(exist_ok=True)
@@ -145,6 +146,8 @@ def save(
     state["controller"] = get_state_dict(controller)
     if corrector is not None:
         state["corrector"] = get_state_dict(corrector)
+    if ncv_control is not None:
+        state["ncv_control"] = get_state_dict(ncv_control)
 
     # Save current checkpoint
     torch.save(state, ckpt_dir / "checkpoint_{}.pt".format(epoch))
@@ -163,6 +166,7 @@ def load(
     adjoint_matcher: Matcher,
     corrector: torch.nn.Module | None = None,
     corrector_matcher: Matcher | None = None,
+    ncv_control: torch.nn.Module | None = None,
 ):
     optimizer.load_state_dict(checkpoint["optimizer"])
     controller.load_state_dict(checkpoint["controller"])
@@ -175,6 +179,9 @@ def load(
 
     if corrector_matcher is not None and "corrector_buffer" in checkpoint:
         corrector_matcher.buffer.load_state_dict(checkpoint["corrector_buffer"])
+
+    if ncv_control is not None and "ncv_control" in checkpoint:
+        ncv_control.load_state_dict(checkpoint["ncv_control"])
 
     return checkpoint["epoch"] + 1
 

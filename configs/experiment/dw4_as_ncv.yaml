@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+  - /problem: dw4
+  - /source: delta
+  - /sde@ref_sde: graph_ve
+  - /model@controller: egnn
+  - /model@ncv_control: stein_mlp
+  - /state_cost: zero
+  - /term_cost: graph_score_term_cost
+  - /matcher@adjoint_matcher: adjoint_ve
+
+exp_name: dw4_as_ncv
+
+# === sde ===
+nfe: 200
+sigma_max: 2
+sigma_min: 0.001
+rescale_t: null
+
+# === training ===
+num_epochs: 5000
+max_grad_E_norm: 100
+
+adjoint_matcher:
+  buffer_size: 10000
+  duplicates: 10
+  resample_size: 1000
+  num_epochs_per_stage: ${num_epochs}
+  center_energy: true
+  optim:
+    lr: 1e-4
+    weight_decay: 0
+
+ncv_optim:
+  lr: 1e-4
+  weight_decay: 0
+
+# === eval & logging ===
+use_wandb: true
+eval_freq: 200

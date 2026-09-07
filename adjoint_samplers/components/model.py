@@ -136,6 +136,35 @@ class FourierMLP(Model):
         return self.out_layer(self.activation(embed))
 
 
+class SteinControlMLP(nn.Module):
+    """ Time-independent vector field f_φ : R^d → R^d used as a Stein test function.
+
+    The last layer is zero-initialized so the control variate is ~0 at the start
+    of training and does not perturb the AS target.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int = 128,
+        n_layers: int = 3,
+        activation: Callable | None = None,
+    ):
+        super().__init__()
+        self.dim = dim
+        act = activation if activation is not None else nn.SiLU()
+        layers: list[nn.Module] = [nn.Linear(dim, hidden_dim), act]
+        for _ in range(n_layers - 2):
+            layers += [nn.Linear(hidden_dim, hidden_dim), act]
+        self.hidden = nn.Sequential(*layers)
+        self.out_layer = nn.Linear(hidden_dim, dim)
+        nn.init.zeros_(self.out_layer.weight)
+        nn.init.zeros_(self.out_layer.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.out_layer(self.hidden(x))
+
+
 ############################################################################################
 #### EGNN: from https://github.com/jarridrb/DEM/blob/main/dem/models/components/egnn.py ####
 ############################################################################################

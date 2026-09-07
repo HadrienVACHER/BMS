@@ -1,0 +1,6 @@
+_target_: adjoint_samplers.components.model.SteinControlMLP
+dim: ${dim}
+hidden_dim: 128
+n_layers: 3
+activation:
+  _target_: torch.nn.SiLU

@@ -66,6 +66,11 @@ def main(cfg):
         else:
             corrector = corrector_matcher = None
 
+        ncv_control = None
+        if "ncv_control" in cfg:
+            print("Instantiating Stein NCV control f_phi...")
+            ncv_control = hydra.utils.instantiate(cfg.ncv_control).to(device)
+
 
         print("Instantiating grad of costs...")
         grad_term_cost = hydra.utils.instantiate(
@@ -83,20 +88,23 @@ def main(cfg):
             grad_term_cost=grad_term_cost,
             sde=sde,
             source=source,
+            ncv_control=ncv_control,
         )
 
 
         print("Instantiating optimizer...")
         lr_schedule = None # TODO(ghliu) add scheduler
+        param_groups = [
+            {'params': controller.parameters(), **cfg.adjoint_matcher.optim},
+        ]
+        if ncv_control is not None:
+            ncv_optim = cfg.get("ncv_optim", cfg.adjoint_matcher.optim)
+            param_groups.append({'params': ncv_control.parameters(), **ncv_optim})
         if corrector is not None:
-            optimizer = torch.optim.Adam([
-                {'params': controller.parameters(), **cfg.adjoint_matcher.optim},
-                {'params': corrector.parameters(), **cfg.corrector_matcher.optim},
-            ])
-        else:
-            optimizer = torch.optim.Adam(
-                controller.parameters(), **cfg.adjoint_matcher.optim,
+            param_groups.append(
+                {'params': corrector.parameters(), **cfg.corrector_matcher.optim}
             )
+        optimizer = torch.optim.Adam(param_groups)
 
 
         checkpoint_path = Path(cfg.checkpoint or "checkpoints/checkpoint_latest.pt")
@@ -111,6 +119,7 @@ def main(cfg):
                 adjoint_matcher,
                 corrector=corrector,
                 corrector_matcher=corrector_matcher,
+                ncv_control=ncv_control,
             )
             # Note: Not wrapping this in a DDP since we don't differentiate through SDE simulation.
         else:
@@ -125,6 +134,11 @@ def main(cfg):
                 corrector = torch.nn.parallel.DistributedDataParallel(
                     corrector, device_ids=[cfg.gpu], find_unused_parameters=True
                 )
+            if ncv_control is not None:
+                ncv_control = torch.nn.parallel.DistributedDataParallel(
+                    ncv_control, device_ids=[cfg.gpu], find_unused_parameters=True
+                )
+                adjoint_matcher.ncv_control = ncv_control
 
 
         print("Instantiating writer...")
@@ -222,6 +236,7 @@ def main(cfg):
                     adjoint_matcher,
                     corrector=corrector,
                     corrector_matcher=corrector_matcher,
+                    ncv_control=ncv_control,
                 )
 
     except Exception as e:
