@@ -389,6 +389,7 @@ class BMSTrainer:
             remainder = self.fabric.load(checkpoint_path, state)
             self.global_step = remainder.pop("global_step")
             self.current_epoch = remainder.pop("current_epoch")
+            self.load_buffer()
 
     def save_checkpoint(self):
         checkpoint_directory = Path(self.cfg.checkpoint_directory)
@@ -403,6 +404,37 @@ class BMSTrainer:
         if hasattr(self, "controller_scheduler"):
             state["controller_scheduler"] = self.controller_scheduler
         self.fabric.save(checkpoint_path, state)
+        self.save_buffer()
+
+    def _buffer_path(self, epoch: int) -> Path:
+        # Buffers are per rank and kept in a subfolder, so that the ``*.pt`` glob
+        # used to find the latest checkpoint does not pick them up.
+        rank = self.fabric.global_rank
+        return (
+            Path(self.cfg.checkpoint_directory)
+            / "buffer"
+            / f"epoch_{epoch:04d}_rank{rank}.pt"
+        )
+
+    def save_buffer(self):
+        """Save this rank's replay buffer, keeping only the latest copy."""
+        path = self._buffer_path(self.current_epoch)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self.buffer.state_dict(), path)
+        rank = self.fabric.global_rank
+        for old in path.parent.glob(f"epoch_*_rank{rank}.pt"):
+            if old != path:
+                old.unlink()
+
+    def load_buffer(self):
+        """Restore this rank's replay buffer for the resumed epoch, if saved."""
+        path = self._buffer_path(self.current_epoch)
+        if path.exists():
+            self.buffer.load_state_dict(torch.load(path, weights_only=True))
+        else:
+            rank_zero_warn(
+                f"No replay buffer saved at {path}; resuming with an empty buffer."
+            )
 
     ############################################################################
     # Logging and evaluation

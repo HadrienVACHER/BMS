@@ -80,6 +80,16 @@ class ReplayBuffer(Dataset):
         except StopIteration:
             return 0
 
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        """Stack the stored samples per key (for checkpointing)."""
+        return {key: torch.stack(values) for key, values in self.storage.items() if values}
+
+    def load_state_dict(self, state_dict: Mapping[str, torch.Tensor]) -> None:
+        """Restore the samples saved by ``state_dict``."""
+        self.storage = defaultdict(list)
+        for key, value in state_dict.items():
+            self.storage[key] = list(value.unbind(0))
+
     def __getitem__(self, idx) -> dict[str, torch.Tensor]:
         return {key: value[idx] for key, value in self.storage.items()}
 
