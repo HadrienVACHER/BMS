@@ -142,7 +142,12 @@ python -u -m bms.experiment.sample experiment=lj13 \
 ```
 
 `bash scripts/nbody.sh` runs all three systems with seeds 0, 1, 2 (extra Hydra
-overrides such as `damping=10` are forwarded).
+overrides such as `damping=10` are forwarded). On a PBS cluster, edit the
+`EXPERIMENTS` / `SEEDS` / `EXTRA` arrays at the top of the script and submit from
+the repository root: `qsub scripts/nbody_gpus.pbs` (one run per GPU) or
+`qsub scripts/nbody.pbs` (all runs share one GPU). Outputs go to
+`results/nbody/<system>_seed<seed>/` and logs to `logs/`. Download the reference
+data beforehand, since compute nodes may not have internet access.
 
 The setup follows the paper (App. D.2), which builds on
 [`adjoint_samplers`](https://github.com/facebookresearch/adjoint_samplers): the

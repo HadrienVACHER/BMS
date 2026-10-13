@@ -10,6 +10,8 @@ venv/
 
 # Training outputs / logs
 outputs/
+results/
+logs/
 ckpts/
 wandb/
 *.pt

@@ -1,0 +1,89 @@
+#!/bin/bash
+#PBS -N bms_nbody
+#PBS -P gs_ccds_haidang.dau
+#PBS -q gpu_as
+#PBS -l walltime=18:00:00
+#PBS -l select=1:ncpus=12:ngpus=1:mem=32gb
+#PBS -j oe
+
+# Un job, un run par GPU (système x seed). Garder ngpus = nombre de combinaisons
+# et ncpus = 12 x ngpus.
+# Avant de soumettre (depuis un nœud avec internet) : bash scripts/download_nbody_data.sh
+# Soumettre depuis la racine du dépôt : qsub scripts/nbody_gpus.pbs
+# Test court : qsub -l walltime=00:10:00 scripts/nbody_gpus.pbs
+EXPERIMENTS=(dw4)             # (dw4 lj13 lj55)
+SEEDS=(0)                     # (0 1 2)
+EXTRA=()                      # surcharges Hydra communes, ex. (damping=10)
+NPROC=$(( ${#EXPERIMENTS[@]} * ${#SEEDS[@]} ))
+
+cd "${PBS_O_WORKDIR}" || exit 1
+mkdir -p logs
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="${PBS_O_WORKDIR}/src:${PYTHONPATH:-}"
+# export WANDB_MODE=offline   # W&B hors ligne (sync ensuite avec `wandb sync`) ; désactivé pour W&B en ligne
+
+# --- Correctif officiel PBS/GaaS pour les identifiants GPU ---
+if echo "${CUDA_VISIBLE_DEVICES:-}" | grep -q "GPU-"; then
+    GPU_COUNT=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
+    CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
+    export CUDA_VISIBLE_DEVICES
+    echo "CUDA_VISIBLE_DEVICES converti en index : ${CUDA_VISIBLE_DEVICES}"
+fi
+
+# 12 threads CPU par processus (le calcul de eq_w2 tourne sur CPU)
+export OMP_NUM_THREADS=12
+export MKL_NUM_THREADS=12
+
+# --- Environnement Conda BMS ---
+module purge
+module load anaconda/2025
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+conda activate BMS
+
+echo "Nœud : $(hostname) à $(date)"
+nvidia-smi -L
+python -c "import torch, lightning, bms; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available())" || exit 1
+
+# --- Vérifications : données de référence et assez de GPU visibles ---
+for f in test_split_DW4.npy test_split_LJ13-1000.npy test_split_LJ55-1000-part1.npy; do
+    if [ ! -f "data/nbody/${f}" ]; then
+        echo "ERREUR : data/nbody/${f} manquant, lancer scripts/download_nbody_data.sh"
+        exit 1
+    fi
+done
+IFS=',' read -ra GPUS <<< "${CUDA_VISIBLE_DEVICES}"
+if [ "${#GPUS[@]}" -lt "${NPROC}" ]; then
+    echo "ERREUR : ${#GPUS[@]} GPU visibles, ${NPROC} requis"
+    exit 1
+fi
+
+# Suivi de l'utilisation des GPU toutes les 30 s
+nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used --format=csv -l 30 > logs/gpu_usage_nbody.csv &
+MON=$!
+
+# --- Lancement : un processus par GPU ---
+# Chaque run est un process group Lightning (DDP, 1 GPU) : un MASTER_PORT distinct
+# par run évite les conflits entre processus du même nœud.
+pids=()
+i=0
+for EXP in "${EXPERIMENTS[@]}"; do
+  for SEED in "${SEEDS[@]}"; do
+    echo "BMS ${EXP} seed=${SEED} sur GPU ${GPUS[$i]}"
+    CUDA_VISIBLE_DEVICES=${GPUS[$i]} MASTER_PORT=$(( 29500 + i )) \
+    python -u -m bms.experiment.train experiment=${EXP} seed=${SEED} \
+        name=${EXP}_seed${SEED} root=results/nbody \
+        "${EXTRA[@]}" \
+        > logs/${EXP}_seed${SEED}.log 2>&1 &
+    pids+=($!)
+    i=$((i + 1))
+  done
+done
+
+# --- Attente de chaque run, avec trace des échecs ---
+fail=0
+for p in "${pids[@]}"; do
+    wait "$p" || fail=1
+done
+kill $MON 2>/dev/null
+echo "Fin à $(date), statut : ${fail}"
+exit $fail

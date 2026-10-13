@@ -1,0 +1,76 @@
+#!/bin/bash
+#PBS -N bms_nbody_grp
+#PBS -P gs_ccds_haidang.dau
+#PBS -q gpu_as
+#PBS -l walltime=18:00:00
+#PBS -l select=1:ncpus=12:ngpus=1:mem=32gb
+#PBS -j oe
+
+# Un job, un seul GPU partagé par tous les runs (système x seed).
+# Avant de soumettre (depuis un nœud avec internet) : bash scripts/download_nbody_data.sh
+# Soumettre depuis la racine du dépôt : qsub scripts/nbody.pbs
+EXPERIMENTS=(dw4)   # (dw4 lj13 lj55)
+SEEDS=(0)           # (0 1 2)
+EXTRA=()            # surcharges Hydra communes, ex. (damping=10)
+NPROC=$(( ${#EXPERIMENTS[@]} * ${#SEEDS[@]} ))
+THREADS=$(( 12 / NPROC > 0 ? 12 / NPROC : 1 ))
+
+cd "${PBS_O_WORKDIR}" || exit 1
+mkdir -p logs
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="${PBS_O_WORKDIR}/src:${PYTHONPATH:-}"
+# export WANDB_MODE=offline   # W&B hors ligne (sync ensuite avec `wandb sync`)
+
+# --- Correctif officiel PBS/GaaS pour les identifiants GPU (inchangé) ---
+if echo "${CUDA_VISIBLE_DEVICES:-}" | grep -q "GPU-"; then
+    GPU_COUNT=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
+    CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
+    export CUDA_VISIBLE_DEVICES
+fi
+
+# 12 CPU répartis entre les processus
+export OMP_NUM_THREADS=${THREADS}
+export MKL_NUM_THREADS=${THREADS}
+
+module purge
+module load anaconda/2025
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+conda activate BMS
+
+echo "Nœud : $(hostname) à $(date)"
+nvidia-smi -L
+python -c "import torch, lightning, bms; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available())" || exit 1
+
+for f in test_split_DW4.npy test_split_LJ13-1000.npy test_split_LJ55-1000-part1.npy; do
+    if [ ! -f "data/nbody/${f}" ]; then
+        echo "ERREUR : data/nbody/${f} manquant, lancer scripts/download_nbody_data.sh"
+        exit 1
+    fi
+done
+
+# Suivi de l'utilisation du GPU toutes les 30 s
+nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 30 > logs/gpu_usage_nbody_grp.csv &
+MON=$!
+
+# Un MASTER_PORT distinct par run (process groups Lightning sur le même nœud)
+pids=()
+i=0
+for EXP in "${EXPERIMENTS[@]}"; do
+  for SEED in "${SEEDS[@]}"; do
+    echo "Lancement BMS ${EXP} seed=${SEED}"
+    MASTER_PORT=$(( 29500 + i )) \
+    python -u -m bms.experiment.train experiment=${EXP} seed=${SEED} \
+        name=${EXP}_seed${SEED} root=results/nbody \
+        "${EXTRA[@]}" \
+        > logs/${EXP}_seed${SEED}.log 2>&1 &
+    pids+=($!)
+    i=$((i + 1))
+  done
+done
+
+# Attend chaque processus et garde la trace des échecs
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=1; done
+kill $MON 2>/dev/null
+echo "Fin à $(date), statut : ${fail}"
+exit $fail
