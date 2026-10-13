@@ -1,0 +1,27 @@
+# @package _global_
+# Bridge Matching Sampler on LJ-13: 13 Lennard-Jones particles in 3D (d = 39).
+defaults:
+  - _nbody_common
+
+name: lj13
+
+num_atoms: 13
+spatial_dim: 3
+
+potential:
+  _target_: bms.potential.nbody.LennardJonesPotential
+  n_particles: ${num_atoms}
+  spatial_dim: ${spatial_dim}
+
+ref_samples_file: test_split_LJ13-1000.npy
+
+# Best values from the paper's sweep (App. D.2).
+sigma_init: 1.0
+sigma_max: 1.0
+nfe: 1000
+
+train_batch_size: 512
+inference_batch_size: 512
+buffer_samples_per_epoch: 512
+
+eval_interval_epoch: 50

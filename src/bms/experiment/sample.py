@@ -3,7 +3,8 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-"""Generate samples from a trained BMS checkpoint and evaluate them with boltzkit.
+"""Generate samples from a trained BMS checkpoint and evaluate them against
+reference data with the configured ``evaluator``.
 
 Example
 -------
@@ -11,24 +12,21 @@ Example
         experiment=ala2 \
         checkpoint_directory=ckpts/ala2/checkpoints \
         num_samples=100000
+
+    python -u -m bms.experiment.sample \
+        experiment=lj13 \
+        checkpoint_directory=outputs/lj13/checkpoints \
+        num_samples=2000
 """
 
 from pathlib import Path
 
 import hydra
+import matplotlib.pyplot as plt
 import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from tqdm import tqdm
-
-from boltzkit.evaluation import EvalData, run_eval
-from boltzkit.evaluation.eval import EnergyHistEval, make_wandb_compatible
-from boltzkit.evaluation.molecular_eval import (
-    DihedralAngleEval,
-    TicaEval,
-    TorsionMarginalEval,
-)
-from boltzkit.targets.boltzmann import MolecularBoltzmann
 
 from bms.process.sde import ControlledSDE
 from bms.utils.topology import save_data_to_pdb
@@ -98,50 +96,31 @@ def main(cfg: DictConfig) -> None:
     torch.set_float32_matmul_precision("highest")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    samples = generate(cfg, device)  # (num_samples, n_atoms, 3), Angstrom
+    samples = generate(cfg, device)  # (num_samples, n_atoms, spatial_dim)
 
     out_dir = Path(HydraConfig.get().run.dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save({"pos": samples}, out_dir / "samples.pt")
-    if hasattr(cfg, "topology_pdb_file"):
+    if cfg.get("topology_pdb_file"):
         save_data_to_pdb(
             data=samples.numpy(),
             topology_file=cfg.topology_pdb_file,
             output_file=str(out_dir / "samples.pdb"),
         )
 
-    # Evaluate against boltzkit reference data.
-    system: MolecularBoltzmann = hydra.utils.instantiate(
-        cfg.potential.potentials[0].system
-    )
-    val_data = system.load_dataset(T=cfg.temperature, type="val").get_samples()
+    # Evaluate against the reference data.
+    potential = hydra.utils.instantiate(cfg.potential)
+    evaluator = hydra.utils.instantiate(cfg.evaluator, potential=potential)
+    metrics = evaluator(samples)
 
-    topology = system.get_mdtraj_topology()
-    eval_pipeline = [
-        EnergyHistEval(),
-        TorsionMarginalEval(topology),
-        TicaEval(topology, system.get_tica_model()),
-        DihedralAngleEval(topology, system.get_z_matrix()),
-    ]
-
-    xyz = samples.numpy()
-    pred_flat = xyz.reshape(xyz.shape[0], -1)
-    min_size = min(pred_flat.shape[0], val_data.shape[0])
-    eval_data = EvalData(
-        true_samples_target_log_prob=system.get_log_prob(val_data[:min_size]),
-        pred_samples_target_log_prob=system.get_log_prob(pred_flat[:min_size]),
-        samples_true=val_data[:min_size],
-        samples_pred=pred_flat[:min_size],
-    )
-    metrics = run_eval(data=eval_data, evals=eval_pipeline)
-    scalar_metrics = {
-        k: float(v)
-        for k, v in make_wandb_compatible(metrics, dpi=100).items()
-        if isinstance(v, (int, float))
-    }
     print("Evaluation metrics:")
-    for key, value in scalar_metrics.items():
-        print(f"  {key}: {value:.5f}")
+    for key, value in metrics.items():
+        if isinstance(value, plt.Figure):
+            filename = out_dir / f"{key.replace('/', '_')}.png"
+            value.savefig(filename, dpi=150)
+            plt.close(value)
+        elif isinstance(value, (int, float)):
+            print(f"  {key}: {value:.5f}")
 
 
 if __name__ == "__main__":

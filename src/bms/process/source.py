@@ -13,7 +13,7 @@ from bms.utils.geometry import is_mean_free, subtract_mean
 
 
 class GaussianSource(nn.Module):
-    """Generates a batch of mean-free Gaussian positions of shape ``(B, N, 3)``."""
+    """Generates a batch of mean-free Gaussian positions of shape ``(B, N, D)``."""
 
     def __init__(
         self,
@@ -21,6 +21,7 @@ class GaussianSource(nn.Module):
         composition: str | None = None,
         scale: float = 1.0,
         center: bool = True,
+        spatial_dim: int = 3,
     ):
         super().__init__()
         if not ((num_atoms is None) ^ (composition is None)):
@@ -31,15 +32,16 @@ class GaussianSource(nn.Module):
             num_atoms = len(atomic_numbers)
 
         self.num_atoms = num_atoms
+        self.spatial_dim = spatial_dim
         self.center = center
         self.register_buffer("scale", torch.tensor(scale, dtype=torch.float))
 
     def sample(self, batch_size: int) -> torch.Tensor:
-        """Sample a batch of positions of shape ``(B, N, 3)``."""
+        """Sample a batch of positions of shape ``(B, N, D)``."""
         pos = torch.randn(
             batch_size,
             self.num_atoms,
-            3,
+            self.spatial_dim,
             dtype=torch.float,
             device=self.scale.device,
         )

@@ -17,11 +17,20 @@ log_loss_interval_step: 10
 checkpoint_directory: ${hydra:run.dir}/checkpoints
 save_checkpoint_interval_epoch: 50
 save_vis_interval_epoch: 50
+# Evaluation: every `eval_interval_epoch` epochs, either on the replay buffer
+# (`eval_source: buffer`) or on `num_eval_samples` freshly simulated samples
+# (`eval_source: fresh`).
+eval_interval_epoch: ${save_vis_interval_epoch}
+eval_source: buffer
+num_eval_samples: 2000
 sample_directory: ${hydra:run.dir}/samples
 save_sample_interval_epoch: 20
 progress_bar: true
 num_workers: 0
 compile: true
+
+# Spatial dimension of each particle / atom.
+spatial_dim: 3
 
 # Number of samples to generate in bms.experiment.sample.
 num_samples: 100000

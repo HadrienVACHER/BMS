@@ -1,0 +1,28 @@
+# @package _global_
+# Bridge Matching Sampler on DW-4: 4 particles in 2D with a pairwise double-well
+# potential (d = 8).
+defaults:
+  - _nbody_common
+
+name: dw4
+
+num_atoms: 4
+spatial_dim: 2
+
+potential:
+  _target_: bms.potential.nbody.DoubleWellPotential
+  n_particles: ${num_atoms}
+  spatial_dim: ${spatial_dim}
+
+ref_samples_file: test_split_DW4.npy
+
+# Best values from the paper's sweep (App. D.2).
+sigma_init: 2.0
+sigma_max: 1.5
+nfe: 200
+
+train_batch_size: 512
+inference_batch_size: 512
+buffer_samples_per_epoch: 512
+
+eval_interval_epoch: 50

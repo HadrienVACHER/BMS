@@ -1,0 +1,11 @@
+# E(n)-equivariant GNN for identical-particle systems (as in adjoint_samplers).
+_target_: bms.model.egnn.EGNNDynamics
+n_particles: ${num_atoms}
+spatial_dim: ${spatial_dim}
+hidden_nf: 128
+n_layers: 5
+recurrent: true
+attention: true
+condition_time: true
+tanh: true
+agg: sum

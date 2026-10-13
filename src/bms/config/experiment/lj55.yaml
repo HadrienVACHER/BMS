@@ -1,0 +1,27 @@
+# @package _global_
+# Bridge Matching Sampler on LJ-55: 55 Lennard-Jones particles in 3D (d = 165).
+defaults:
+  - _nbody_common
+
+name: lj55
+
+num_atoms: 55
+spatial_dim: 3
+
+potential:
+  _target_: bms.potential.nbody.LennardJonesPotential
+  n_particles: ${num_atoms}
+  spatial_dim: ${spatial_dim}
+
+ref_samples_file: test_split_LJ55-1000-part1.npy
+
+# Best values from the paper's sweep (App. D.2).
+sigma_init: 0.5
+sigma_max: 0.5
+nfe: 1000
+
+train_batch_size: 200
+inference_batch_size: 200
+buffer_samples_per_epoch: 200
+
+eval_interval_epoch: 200

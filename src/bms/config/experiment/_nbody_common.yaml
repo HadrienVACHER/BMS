@@ -1,0 +1,114 @@
+# @package _global_
+# Settings shared by the n-body particle systems (DW-4, LJ-13, LJ-55).
+# Training hyperparameters follow adjoint_samplers (Liu et al., 2025), which the
+# paper's n-body results build on; system-specific values live in dw4/lj13/lj55.yaml.
+defaults:
+  - /model: egnn
+
+################################################################################
+# System setup (dimensionless energies, tau = 1)
+################################################################################
+temperature: 1.0
+mean_free: true
+
+################################################################################
+# Model (controller producing the SDE control)
+################################################################################
+controller:
+  _target_: bms.model.controller.ClippedModel
+  base_model: ${model}
+  subtract_mean: true
+  clip_value: null
+
+compile: false
+
+################################################################################
+# Optimization (constant learning rate, no gradient-norm clipping)
+################################################################################
+controller_optimizer:
+  _target_: torch.optim.Adam
+  lr: 1e-4
+  weight_decay: 0.0
+
+gradient_clip_val: null
+ema_decay: null
+ema_start_step: 0
+
+# Damped fixed-point iteration; the paper's n-body results use no damping.
+prev_model_interval_epoch: 25
+damping: 0.0
+
+################################################################################
+# Replay buffer
+################################################################################
+buffer:
+  _target_: bms.data.buffer.ReplayBuffer
+  max_size: 10000
+  filter_nan: true
+
+initial_buffer_samples: ${buffer_samples_per_epoch}
+log_buffer_energy: true
+log_buffer_grad_norm: true
+
+################################################################################
+# Prior, reference SDE, and integrator
+################################################################################
+source:
+  _target_: bms.process.source.GaussianSource
+  num_atoms: ${num_atoms}
+  spatial_dim: ${spatial_dim}
+  center: ${mean_free}
+  scale: ${sigma_init}
+
+# Geometric (variance-exploding) noise schedule, eq. (196) of the paper.
+sigma_min: 0.001
+base_sde:
+  _target_: bms.process.sde.VESDE
+  sigma_min: ${sigma_min}
+  sigma_max: ${sigma_max}
+
+integrator:
+  _target_: bms.process.integrator.EulerMaruyamaIntegrator
+  timesteps:
+    _target_: bms.process.integrator.get_timesteps
+    t0: 0.0
+    t1: 1.0
+    steps: ${nfe}
+    rescale_t: null
+
+################################################################################
+# Terminal cost (target score = grad E, per-particle clipped, mean-free)
+################################################################################
+terminal_cost:
+  _target_: bms.process.terminal_cost.BMSTerminalCost
+  temperature: ${temperature}
+  thermal_energy: 1.0
+  grad_clip_val: 100.0
+  center_grad: true
+
+annealer:
+  _target_: bms.process.annealer.TemperatureAnnealer
+  epochs: [0, 1]
+  temperatures: [1.0, 1.0]  # no annealing
+
+################################################################################
+# Training schedule
+################################################################################
+steps_per_epoch: 100
+curriculum:
+  - bridge_matching: 5000
+
+################################################################################
+# Evaluation (fresh samples vs. reference MCMC samples)
+################################################################################
+eval_source: fresh
+num_eval_samples: 2000
+num_samples: 2000
+
+evaluator:
+  _target_: bms.evaluation.nbody.NBodyEvaluator
+  ref_samples_path: ${hydra:runtime.cwd}/data/nbody/${ref_samples_file}
+  n_particles: ${num_atoms}
+  spatial_dim: ${spatial_dim}
+  max_samples: ${num_eval_samples}
+  compute_eq_w2: true

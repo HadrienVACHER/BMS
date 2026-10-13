@@ -50,8 +50,10 @@ Iterating these steps drives the time marginals of the learned process towards
 the target `p_target`. A replay buffer stores `(X_0, X_1, target_score)` tuples
 across iterations for sample-efficient data reuse.
 
-This release focuses on the molecular benchmark from the paper: **alanine
-dipeptide (ALA2, d = 66)**, trained directly on all-atom Cartesian coordinates.
+This release covers two benchmarks from the paper: the molecular benchmark
+**alanine dipeptide (ALA2, d = 66)**, trained directly on all-atom Cartesian
+coordinates, and the **n-body particle systems DW-4 (d = 8), LJ-13 (d = 39), and
+LJ-55 (d = 165)** (Table 2).
 
 ## Installation
 
@@ -121,14 +123,57 @@ python -u -m bms.experiment.sample \
 This writes `samples.pt` (and a `samples.pdb`) to the run directory and prints
 the evaluation metrics.
 
+### n-body particle systems (DW-4, LJ-13, LJ-55)
+
+These targets are analytic, so they need neither boltzkit nor OpenMM. Download
+the reference samples (long-run MCMC, from
+[DEM](https://github.com/jarridrb/DEM)) once:
+
+```bash
+bash scripts/download_nbody_data.sh   # -> data/nbody/
+```
+
+Then train and evaluate, e.g. on LJ-13:
+
+```bash
+python -u -m bms.experiment.train experiment=lj13 name=lj13 root=outputs
+python -u -m bms.experiment.sample experiment=lj13 \
+    checkpoint_directory=outputs/lj13/checkpoints
+```
+
+`bash scripts/nbody.sh` runs all three systems with seeds 0, 1, 2 (extra Hydra
+overrides such as `damping=10` are forwarded).
+
+The setup follows the paper (App. D.2), which builds on
+[`adjoint_samplers`](https://github.com/facebookresearch/adjoint_samplers): the
+same EGNN controller, energies, training schedule, and metrics, with the BMS
+values for the prior scale and noise schedule (`sigma_init` / `sigma_max` = 2 / 1.5
+for DW-4, 1 / 1 for LJ-13, 0.5 / 0.5 for LJ-55), no damping, and `c = gamma`.
+Every `eval_interval_epoch` epochs, 2,000 fresh samples are compared against
+the reference samples:
+
+| Logged metric    | Table 2 column | Description |
+|------------------|----------------|-------------|
+| `eval/eq_w2`     | `W2`           | W2 between samples under the RMSD cost after optimal permutation and rigid alignment |
+| `eval/energy_w2` | `E(·) W2`      | W2 between energy distributions |
+| `eval/dist_w2`   | –              | squared W2 between interatomic-distance distributions |
+
+## Tests
+
+```bash
+pip install pytest
+pytest tests/
+```
+
 ## Repository structure
 
 ```
 src/bms/
-├── config/                # Hydra configs (train.yaml, experiment/ala2.yaml, model/painn.yaml)
+├── config/                # Hydra configs (train.yaml, experiment/{ala2,dw4,lj13,lj55}.yaml, model/)
 ├── data/buffer.py         # Replay buffer for fixed-point data reuse
-├── model/                 # E(3)-equivariant PaiNN backbone + control wrapper
-├── potential/             # boltzkit target wrapper + chirality restraints
+├── evaluation/            # boltzkit (molecular) and n-body evaluators
+├── model/                 # PaiNN (molecules) and EGNN (n-body) backbones + control wrapper
+├── potential/             # boltzkit target wrapper, chirality restraints, DW / LJ potentials
 ├── process/               # SDEs, Brownian bridge, integrator, prior, terminal cost
 ├── utils/                 # geometry, composition, topology, training utilities
 └── experiment/
@@ -142,7 +187,8 @@ This code builds on [`facebookresearch/wt-asbs`](https://github.com/facebookrese
 (Well-Tempered Adjoint Schrödinger Bridge Sampler), which in turn derives from
 [`facebookresearch/adjoint_samplers`](https://github.com/facebookresearch/adjoint_samplers).
 We reuse and adapt its PaiNN backbone, SDE/integrator infrastructure, and replay
-buffer. Molecular target densities and evaluation metrics are provided by
+buffer. The EGNN backbone, n-body energies, and n-body metrics are adapted from
+`adjoint_samplers` and [DEM](https://github.com/jarridrb/DEM). Molecular target densities and evaluation metrics are provided by
 [`boltzkit`](https://github.com/ChristophervonKlitzing/boltzkit). The code in
 this repository inherits the [FAIR Chemistry License](LICENSE).
 

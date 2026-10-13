@@ -11,6 +11,7 @@ name: ala2
 temperature: 300.0
 composition: HCH2CONHCHCH3CONHCH3
 num_atoms: 22
+spatial_dim: 3
 topology_pdb_file: md_data/ala2/ala2_ref.pdb
 mean_free: true
 
@@ -72,6 +73,7 @@ log_buffer_grad_norm: true
 source:
   _target_: bms.process.source.GaussianSource
   num_atoms: ${num_atoms}
+  spatial_dim: ${spatial_dim}
   center: ${mean_free}
   scale: 1.0
 
@@ -118,6 +120,15 @@ terminal_cost:
   _target_: bms.process.terminal_cost.BMSTerminalCost
   temperature: ${temperature}
   grad_clip_val: 100.0
+
+################################################################################
+# Evaluation against boltzkit reference data (on the replay buffer)
+################################################################################
+evaluator:
+  _target_: bms.evaluation.molecular.BoltzkitEvaluator
+  temperature: ${temperature}
+
+eval_source: buffer
 
 annealer:
   _target_: bms.process.annealer.TemperatureAnnealer

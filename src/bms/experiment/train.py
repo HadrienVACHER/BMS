@@ -16,14 +16,17 @@ Each outer epoch performs one step of the generalized fixed-point iteration:
     target (Nelson's identity). When ``damping > 0`` an extra L2 term towards the
     previous iterate ``u_i`` implements the damped fixed-point update.
 
-Evaluation against reference data is delegated to ``boltzkit``.
+Evaluation against reference data is delegated to the configured ``evaluator``
+(boltzkit for molecules, see ``bms.evaluation``).
 """
 
 import copy
 from pathlib import Path
 
 import hydra
+import matplotlib.pyplot as plt
 import torch
+import wandb
 from hydra.core.hydra_config import HydraConfig
 from lightning.fabric import seed_everything
 from lightning.pytorch.loggers import WandbLogger
@@ -31,15 +34,6 @@ from lightning.pytorch.utilities import rank_zero_warn
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
-
-from boltzkit.evaluation import EvalData, run_eval
-from boltzkit.evaluation.eval import EnergyHistEval, make_wandb_compatible
-from boltzkit.evaluation.molecular_eval import (
-    DihedralAngleEval,
-    TicaEval,
-    TorsionMarginalEval,
-)
-from boltzkit.targets.boltzmann import MolecularBoltzmann
 
 from bms.process.sde import ControlledSDE
 from bms.utils.topology import save_data_to_pdb
@@ -96,7 +90,6 @@ class BMSTrainer:
                 cfg.terminal_cost, potential=self.potential
             )
             self.annealer = hydra.utils.instantiate(cfg.annealer)
-            self.target_system: MolecularBoltzmann = self.potential.potentials[0].system
 
         self.curriculum = TrainingCurriculum(
             curriculum=cfg.curriculum, valid_tasks=self.TASKS
@@ -115,19 +108,8 @@ class BMSTrainer:
                 optimizer=self.controller_optimizer,
             )
 
-        # boltzkit reference data and evaluation pipeline.
-        self.val_data = self.target_system.load_dataset(
-            T=self.cfg.temperature, type="val"
-        ).get_samples()
-        self.eval_pipeline = [EnergyHistEval()]
-        topology = self.target_system.get_mdtraj_topology()
-        self.eval_pipeline.append(TorsionMarginalEval(topology))
-        self.eval_pipeline.append(
-            TicaEval(topology, self.target_system.get_tica_model())
-        )
-        self.eval_pipeline.append(
-            DihedralAngleEval(topology, self.target_system.get_z_matrix())
-        )
+        # Reference data and evaluation metrics.
+        self.evaluator = hydra.utils.instantiate(cfg.evaluator, potential=self.potential)
 
     ############################################################################
     # Training loop
@@ -159,7 +141,7 @@ class BMSTrainer:
             self.current_epoch += 1
             if self.current_epoch % self.cfg.save_checkpoint_interval_epoch == 0:
                 self.save_checkpoint()
-            if self.current_epoch % self.cfg.save_vis_interval_epoch == 0:
+            if self.current_epoch % self.cfg.eval_interval_epoch == 0:
                 self.eval()
 
     def snapshot_prev_controller(self):
@@ -257,13 +239,16 @@ class BMSTrainer:
             return
         sample_directory = Path(self.cfg.sample_directory)
         sample_directory.mkdir(parents=True, exist_ok=True)
-        if hasattr(self.cfg, "topology_pdb_file"):
+        if self.cfg.get("topology_pdb_file"):
             filename = sample_directory / f"epoch_{self.current_epoch:04d}.pdb"
             save_data_to_pdb(
                 data=data.detach().cpu().numpy(),
                 topology_file=self.cfg.topology_pdb_file,
                 output_file=str(filename),
             )
+        else:
+            filename = sample_directory / f"epoch_{self.current_epoch:04d}.pt"
+            torch.save({"pos": data.detach().cpu()}, filename)
 
     def create_dataloader(self, current_task) -> DataLoader:
         dataset = self.buffer
@@ -299,7 +284,10 @@ class BMSTrainer:
         if self.global_step % self.cfg.log_loss_interval_step == 0:
             self.log_norms()
 
-        self.fabric.clip_gradients(model, optimizer, max_norm=self.cfg.gradient_clip_val)
+        if self.cfg.gradient_clip_val is not None:
+            self.fabric.clip_gradients(
+                model, optimizer, max_norm=self.cfg.gradient_clip_val
+            )
         optimizer.step()
 
         if self.cfg.ema_decay is not None:
@@ -437,42 +425,71 @@ class BMSTrainer:
         )
 
     @torch.no_grad()
+    def generate_samples(self, num_samples: int) -> torch.Tensor:
+        """Simulate ``X_1`` under the current control for ``num_samples`` prior samples."""
+        controller_training_state = self.controller.training
+        self.controller.eval()
+        batch_size = self.cfg.inference_batch_size
+        samples = []
+        for start in range(0, num_samples, batch_size):
+            data_0 = self.source.sample(min(batch_size, num_samples - start))
+            data_1 = self.integrator.run(
+                initial_data=data_0,
+                center_every_step=self.cfg.mean_free,
+                zero_last_step_noise=False,
+                return_trajectory=False,
+                progress_bar=False,
+            )
+            samples.append(data_1)
+        self.controller.train(controller_training_state)
+        return torch.cat(samples, dim=0)
+
+    @torch.no_grad()
     def eval(self):
-        n_atoms = self.target_system.n_atoms
+        shape = (self.cfg.num_atoms, self.cfg.spatial_dim)
 
-        local_positions = []
-        for batch in self.buffer.storage.get("data_1", []):
-            pos = batch.to(self.fabric.device).reshape(-1, n_atoms, 3)
-            local_positions.append(pos)
-
-        if local_positions:
-            local_tensor = torch.cat(local_positions, dim=0)
+        if self.cfg.eval_source == "buffer":
+            # Evaluate on the most recent samples stored in the replay buffer.
+            local_positions = [
+                batch.to(self.fabric.device).reshape(-1, *shape)
+                for batch in self.buffer.storage.get("data_1", [])
+            ]
+            if local_positions:
+                local_tensor = torch.cat(local_positions, dim=0)
+            else:
+                local_tensor = torch.zeros((0, *shape), device=self.fabric.device)
+        elif self.cfg.eval_source == "fresh":
+            # Simulate fresh samples, split evenly across ranks.
+            world_size = self.fabric.world_size
+            num_local = -(-self.cfg.num_eval_samples // world_size)
+            local_tensor = self.generate_samples(num_local)
         else:
-            local_tensor = torch.zeros((0, n_atoms, 3), device=self.fabric.device)
+            raise ValueError(f"Unknown eval_source: {self.cfg.eval_source}")
 
         gathered_tensor = self.fabric.all_gather(local_tensor)
         if self.fabric.global_rank != 0:
             return
 
-        xyz = gathered_tensor.reshape(-1, n_atoms, 3).detach().cpu().numpy()
-        if xyz.shape[0] == 0:
+        samples = gathered_tensor.reshape(-1, *shape).detach().cpu()
+        if self.cfg.eval_source == "fresh":
+            samples = samples[: self.cfg.num_eval_samples]
+        if samples.shape[0] == 0:
             return
 
-        min_size = min(xyz.shape[0], self.val_data.shape[0])
-        eval_data = EvalData(
-            true_samples_target_log_prob=self.target_system.get_log_prob(
-                self.val_data[:min_size]
-            ),
-            pred_samples_target_log_prob=self.target_system.get_log_prob(
-                self.val_data[:min_size]
-            ),
-            samples_true=self.val_data[:min_size],
-            samples_pred=xyz.reshape(xyz.shape[0], -1)[:min_size],
-        )
-        metrics = run_eval(data=eval_data, evals=self.eval_pipeline)
-        self.fabric.log_dict(
-            make_wandb_compatible(metrics, dpi=100), step=self.global_step
-        )
+        metrics = self.evaluator(samples)
+        self.fabric.log_dict(to_loggable(metrics), step=self.global_step)
+
+
+def to_loggable(metrics: dict) -> dict:
+    """Convert matplotlib figures to W&B images (and close them)."""
+    loggable = {}
+    for key, value in metrics.items():
+        if isinstance(value, plt.Figure):
+            loggable[key] = wandb.Image(value)
+            plt.close(value)
+        else:
+            loggable[key] = value
+    return loggable
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="train")

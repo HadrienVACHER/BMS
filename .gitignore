@@ -25,3 +25,6 @@ target_cache/
 .vscode/
 .DS_Store
 /.claude-terminal
+
+# Reference data for the n-body systems (scripts/download_nbody_data.sh)
+data/
