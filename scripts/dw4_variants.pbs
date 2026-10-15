@@ -1,0 +1,82 @@
+#!/bin/bash
+#PBS -N bms_dw4_var
+#PBS -P gs_ccds_haidang.dau
+#PBS -q gpu_as
+#PBS -l walltime=18:00:00
+#PBS -l select=1:ncpus=12:ngpus=1:mem=32gb
+#PBS -j oe
+
+# Variantes DW-4 (une seed) lancées en parallèle sur un seul GPU, pour chercher
+# l'écart avec le Tableau 2 du papier. Référence : le run dw4_seed0 déjà fait
+# (cible C.3, prior gaussien sigma_init = 2, sans amortissement).
+# Soumettre depuis la racine du dépôt : qsub scripts/dw4_variants.pbs
+# Si le walltime est atteint, resoumettre : chaque run reprend à son dernier checkpoint.
+# Format : "nom|surcharges Hydra"
+VARIANTS=(
+  "dw4_eq24|xi_form=eq24 train_time_min=1e-3"          # cible xi de l'éq. (24) du papier
+  "dw4_damp10|damping=10 prev_model_interval_epoch=1"  # itération amortie, eta = 10
+  "dw4_harmonic|sigma_init=1.632993"                   # prior harmonique d'adjoint_samplers (échelle 2)
+)
+EPOCHS=2000
+SEED=0
+NPROC=${#VARIANTS[@]}
+THREADS=$(( 12 / NPROC > 0 ? 12 / NPROC : 1 ))
+
+cd "${PBS_O_WORKDIR}" || exit 1
+mkdir -p logs
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="${PBS_O_WORKDIR}/src:${PYTHONPATH:-}"
+# export WANDB_MODE=offline   # W&B hors ligne (sync ensuite avec `wandb sync`)
+
+# --- Correctif officiel PBS/GaaS pour les identifiants GPU (inchangé) ---
+if echo "${CUDA_VISIBLE_DEVICES:-}" | grep -q "GPU-"; then
+    GPU_COUNT=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
+    CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
+    export CUDA_VISIBLE_DEVICES
+fi
+
+# 12 CPU répartis entre les processus
+export OMP_NUM_THREADS=${THREADS}
+export MKL_NUM_THREADS=${THREADS}
+
+module purge
+module load anaconda/2025
+eval "$(/usr/local/anaconda2025/bin/conda shell.bash hook)"
+conda activate BMS
+
+echo "Nœud : $(hostname) à $(date)"
+nvidia-smi -L
+python -c "import torch, lightning, bms; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available())" || exit 1
+
+if [ ! -f "data/nbody/test_split_DW4.npy" ]; then
+    echo "ERREUR : data/nbody/test_split_DW4.npy manquant, lancer scripts/download_nbody_data.sh"
+    exit 1
+fi
+
+# Suivi de l'utilisation du GPU toutes les 30 s
+nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 30 > logs/gpu_usage_dw4_variants.csv &
+MON=$!
+
+# Un MASTER_PORT distinct par run (process groups Lightning sur le même nœud)
+pids=()
+i=0
+for VARIANT in "${VARIANTS[@]}"; do
+    NAME="${VARIANT%%|*}"
+    read -ra OVERRIDES <<< "${VARIANT#*|}"
+    echo "Lancement ${NAME} : ${OVERRIDES[*]}"
+    MASTER_PORT=$(( 29600 + i )) \
+    python -u -m bms.experiment.train experiment=dw4 seed=${SEED} \
+        name=${NAME}_seed${SEED} root=results/nbody \
+        "curriculum=[{bridge_matching: ${EPOCHS}}]" \
+        "${OVERRIDES[@]}" \
+        > logs/${NAME}_seed${SEED}.log 2>&1 &
+    pids+=($!)
+    i=$((i + 1))
+done
+
+# Attend chaque processus et garde la trace des échecs
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=1; done
+kill $MON 2>/dev/null
+echo "Fin à $(date), statut : ${fail}"
+exit $fail

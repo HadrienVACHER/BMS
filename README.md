@@ -163,6 +163,11 @@ the reference samples:
 | `eval/energy_w2` | `E(·) W2`      | W2 between energy distributions |
 | `eval/dist_w2`   | –              | squared W2 between interatomic-distance distributions |
 
+By default the regression target is computed as in Prop. C.3 of the paper (as in
+the released code); `xi_form=eq24 train_time_min=1e-3` uses eq. (24) instead, with
+a cutoff on the training time since its last term scales as `1/kappa(t)`.
+`qsub scripts/dw4_variants.pbs` runs a few DW-4 variants side by side on one GPU.
+
 ## Tests
 
 ```bash

@@ -53,6 +53,8 @@ log_buffer_grad_norm: true
 ################################################################################
 # Prior, reference SDE, and integrator
 ################################################################################
+# adjoint_samplers' default "harmonic" prior (all particles connected) is this same
+# centered Gaussian with scale * sqrt(2/3): use sigma_init = scale * 0.8165 for it.
 source:
   _target_: bms.process.source.GaussianSource
   num_atoms: ${num_atoms}

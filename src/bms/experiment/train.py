@@ -39,6 +39,43 @@ from bms.process.sde import ControlledSDE
 from bms.utils.topology import save_data_to_pdb
 from bms.utils.training import EMA, TrainingCurriculum
 
+XI_FORMS = ("c3", "eq24")
+
+
+def bridge_matching_target(
+    xi_form: str,
+    base_sde,
+    time: torch.Tensor,  # [B]
+    data_0: torch.Tensor,  # [B, N, D]
+    data_1: torch.Tensor,  # [B, N, D]
+    data_t: torch.Tensor,  # [B, N, D]
+    prior_score: torch.Tensor,  # grad log p_prior(X_0), [B, N, D]
+    target_score: torch.Tensor,  # grad log p_target(X_1), [B, N, D]
+) -> torch.Tensor:
+    """Regression target ``sigma(t)^-1 xi(X, t)`` with control variate ``c = gamma``.
+
+    Both forms have the same fixed point but different variance, and they give
+    different updates away from it (``c3`` matches ``eq24`` with ``c = gamma^2``):
+
+    * ``c3``  (Prop. C.3, as in the released code):
+      ``gamma_t * (prior_score + target_score) - grad_{X_1} log p_{1|0}(X_1 | X_0)``
+    * ``eq24`` (Prop. 2.10, eq. (24)):
+      ``prior_score + target_score - grad_{X_t} log p_{t|0}(X_t | X_0)``. Its last
+      term scales as ``1 / kappa(t)``, so the training time needs a cutoff ``t > 0``.
+    """
+    if xi_form == "c3":
+        time_1 = torch.ones_like(time)
+        kappa_t = base_sde.cond_var_t0(time=time, data=data_0)
+        kappa_1 = base_sde.cond_var_t0(time=time_1, data=data_0)
+        ref_score_1_0 = base_sde.cond_score_t0(
+            time=time_1, data_0=data_0, data_t=data_1
+        )
+        return kappa_t / kappa_1 * (prior_score + target_score) - ref_score_1_0
+    if xi_form == "eq24":
+        ref_score_t_0 = base_sde.cond_score_t0(time=time, data_0=data_0, data_t=data_t)
+        return prior_score + target_score - ref_score_t_0
+    raise ValueError(f"Unknown xi_form {xi_form!r}; expected one of {XI_FORMS}.")
+
 
 class BMSTrainer:
     """Trains the Bridge Matching Sampler via the damped fixed-point iteration."""
@@ -51,6 +88,13 @@ class BMSTrainer:
 
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
+        if cfg.xi_form not in XI_FORMS:
+            raise ValueError(f"Unknown xi_form {cfg.xi_form!r}; expected one of {XI_FORMS}.")
+        if cfg.xi_form == "eq24" and cfg.train_time_min <= 0:
+            raise ValueError(
+                "xi_form=eq24 divides by kappa(t), which vanishes at t = 0; "
+                "set train_time_min > 0 (e.g. 1e-3)."
+            )
 
         wandb_logger = WandbLogger(
             project=cfg.get("project_name", "BridgeMatchingSampler"),
@@ -329,24 +373,26 @@ class BMSTrainer:
         batch_size = data_0.size(0)
 
         # Sample a bridge state X_t given the coupling (X_0, X_1).
-        time = self.fabric.to_device(torch.rand(batch_size, dtype=torch.float))
+        time_min = self.cfg.train_time_min
+        time = time_min + (1 - time_min) * torch.rand(batch_size, dtype=torch.float)
+        time = self.fabric.to_device(time)
         data_t = self.base_sde.sample_posterior(time=time, data_0=data_0, data_1=data_1)
 
         control = self.controller(time, data_t)
 
-        # Target drift via the generalized target score identity (Nelson):
-        #   nelson = gamma_t * (prior_score + target_score) - ref_score_{1|0}
+        # Target drift via Nelson's identity and the generalized target score identity.
         target_score = -terminal_cost
         prior_score = -data_0 / self.source.scale ** 2
-
-        time_1 = self.fabric.to_device(torch.ones(batch_size, dtype=torch.float))
-        kappa_t = self.base_sde.cond_var_t0(time=time, data=data_0)
-        kappa_1 = self.base_sde.cond_var_t0(time=time_1, data=data_0)
-        gamma_t = kappa_t / kappa_1
-        ref_score_1_0 = self.base_sde.cond_score_t0(
-            time=time_1, data_0=data_0, data_t=data_1
+        nelson = bridge_matching_target(
+            self.cfg.xi_form,
+            self.base_sde,
+            time=time,
+            data_0=data_0,
+            data_1=data_1,
+            data_t=data_t,
+            prior_score=prior_score,
+            target_score=target_score,
         )
-        nelson = gamma_t * (prior_score + target_score) - ref_score_1_0
 
         matching_loss = (control - nelson).pow(2).mean()
 
@@ -380,6 +426,8 @@ class BMSTrainer:
         if hasattr(self, "controller_scheduler"):
             state["controller_scheduler"] = self.controller_scheduler
 
+        if not self.cfg.get("resume", True):
+            return
         checkpoint_directory = Path(self.cfg.checkpoint_directory)
         if not checkpoint_directory.exists():
             return
