@@ -13,7 +13,7 @@
 # Test court : qsub -l walltime=00:10:00 scripts/nbody_gpus.pbs
 EXPERIMENTS=(dw4)             # (dw4 lj13 lj55)
 SEEDS=(0)                     # (0 1 2)
-EXTRA=()                      # surcharges Hydra communes, ex. (damping=10)
+EXTRA=(resume=false)                      # surcharges Hydra communes, ex. (damping=10)
 NPROC=$(( ${#EXPERIMENTS[@]} * ${#SEEDS[@]} ))
 
 cd "${PBS_O_WORKDIR}" || exit 1

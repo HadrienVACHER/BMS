@@ -15,6 +15,8 @@ hydra:
 # Logging / checkpointing intervals.
 log_loss_interval_step: 10
 checkpoint_directory: ${hydra:run.dir}/checkpoints
+# If false, ignore existing checkpoints and start from scratch.
+resume: true
 save_checkpoint_interval_epoch: 50
 save_vis_interval_epoch: 50
 # Evaluation: every `eval_interval_epoch` epochs, either on the replay buffer
@@ -28,6 +30,13 @@ save_sample_interval_epoch: 20
 progress_bar: true
 num_workers: 0
 compile: true
+
+# Regression target of the bridge-matching step (both use c = gamma):
+#   c3:   Prop. C.3 of the paper, as in the released code (default).
+#   eq24: Prop. 2.10 / eq. (24) of the paper; needs train_time_min > 0.
+xi_form: c3
+# Training times are sampled from U(train_time_min, 1).
+train_time_min: 0.0
 
 # Spatial dimension of each particle / atom.
 spatial_dim: 3

@@ -11,7 +11,7 @@
 # Soumettre depuis la racine du dépôt : qsub scripts/nbody.pbs
 EXPERIMENTS=(dw4)   # (dw4 lj13 lj55)
 SEEDS=(0)           # (0 1 2)
-EXTRA=()            # surcharges Hydra communes, ex. (damping=10)
+EXTRA=(resume=false)            # surcharges Hydra communes, ex. (damping=10)
 NPROC=$(( ${#EXPERIMENTS[@]} * ${#SEEDS[@]} ))
 THREADS=$(( 12 / NPROC > 0 ? 12 / NPROC : 1 ))
 
